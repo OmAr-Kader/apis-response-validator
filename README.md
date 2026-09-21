@@ -415,4 +415,4 @@ pm.test('Response shape is valid', () => {
 
 ## 📄 License
 
-MIT [LICENSE](LICENSE)
+MIT [LICENSE](https://github.com/OmAr-Kader/apis-response-validator/blob/main/LICENSE)
