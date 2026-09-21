@@ -1,0 +1,31 @@
+{
+  "name": "@omar_kader/apis-response-validator",
+  "version": "1.0.0",
+  "description": "Validate API response shape: required/optional fields, types, array items, and extra fields",
+  "main": "index.js",
+  "files": [
+    "index.js"
+  ],
+  "license": "MIT",
+  "author": "omar_kader",
+  "engines": {
+    "node": ">=14"
+  },
+  "keywords": [
+    "api",
+    "response",
+    "validator",
+    "schema",
+    "postman",
+    "testing"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "check": "node --check index.js",
+    "test": "node test.js",
+    "prepublishOnly": "npm run check",
+    "publish": "npm run check && npm publish --access public"
+  }
+}
