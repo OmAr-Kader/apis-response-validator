@@ -13,8 +13,7 @@ Validate the shape of an API response: required and optional fields, types, arra
 
 See the validator in action, catching missing fields, type mismatches, and extra fields in real-time:
 
-<img width="1442" alt="apis-response-validator" src="https://github.com/user-attachments/assets/b4705d7f-38ac-4fd6-9c51-bd60a3d01a5b" />
-
+<img width="1434" alt="apis-response-validator" src="https://github.com/user-attachments/assets/a3b0479d-0554-408d-96fa-5f0183184815" />
 
 **Example Report Output:**
 ```text
