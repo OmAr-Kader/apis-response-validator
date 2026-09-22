@@ -161,6 +161,17 @@ const STYLE = `
   #ck-root .ck-copy-btn:hover { color:var(--ck-text); border-color:#3a3d44; }
   #ck-root .ck-copy-btn.ck-copied { color:var(--ck-success); border-color:rgba(127,226,184,.35); opacity:1; }
   #ck-root .ck-flash { color:#7fe2b8 !important; }
+  #ck-root .ck-toolbar .ck-copy-btn { opacity:1; }
+  #ck-root .ck-schema-btn { border-color:rgba(111,180,255,.35); color:var(--ck-key); }
+  #ck-root .ck-schema-btn:hover { color:var(--ck-key); border-color:#3a3d44; }
+  #ck-root .ck-schema-btn.ck-copied { color:var(--ck-success); border-color:rgba(127,226,184,.35); }
+  #ck-root .ck-cmp-head, #ck-root .ck-cmp-row { display:grid; grid-template-columns:1fr 130px 130px; gap:8px; padding:3px 4px; white-space:nowrap; }
+  #ck-root .ck-cmp-head { color:var(--ck-muted); font-size:10px; text-transform:uppercase; letter-spacing:.03em; border-bottom:1px solid var(--ck-border); padding-bottom:5px; margin-bottom:3px; }
+  #ck-root .ck-cmp-path { overflow:hidden; text-overflow:ellipsis; color:var(--ck-key); }
+  #ck-root .ck-cmp-val { color:var(--ck-text); }
+  #ck-root .ck-cmp-val i { color:var(--ck-muted); font-style:italic; }
+  #ck-root .ck-cmp-row.ck-cmp-diff { background:rgba(255,138,143,.1); border-radius:4px; }
+  #ck-root .ck-cmp-row.ck-cmp-diff .ck-cmp-val { color:var(--ck-danger); }
 </style>`;
 
 const SCRIPT = `
@@ -237,13 +248,49 @@ const SCRIPT = `
 })();
 </script>`;
 
-// Main entry point: consoleKit.log(anyObject)
+// Renders the special "Compare Schema" section: a two-column diff between
+// the schema inferred from the actual response (`rows[].generated`) and the
+// schema currently hand-written for assertFields (`rows[].existing`). Every
+// row whose two columns don't match (missing on either side, type mismatch,
+// or a ?/|null modifier mismatch) gets highlighted - not just missing ones.
+function buildCompareSchemaHtml(key, rows) {
+  const id = 'n' + Math.random().toString(36).slice(2);
+  const diffCount = rows.filter((r) => r.diff).length;
+  const rowsHtml = rows.map((r) => `
+    <div class="ck-cmp-row${r.diff ? ' ck-cmp-diff' : ''}">
+      <span class="ck-cmp-path">${escapeHtml(r.path)}</span>
+      <span class="ck-cmp-val">${r.generated !== null ? escapeHtml(r.generated) : '<i>&mdash;</i>'}</span>
+      <span class="ck-cmp-val">${r.existing !== null ? escapeHtml(r.existing) : '<i>&mdash;</i>'}</span>
+    </div>`).join('');
+
+  return `
+    <div class="ck-row">
+      <span class="ck-toggle" data-target="${id}">
+        <span class="ck-arrow">&#9656;</span>
+        <span class="ck-label">${escapeHtml(key)} (${diffCount} diff${diffCount === 1 ? '' : 's'})</span>
+      </span>
+    </div>
+    <div class="ck-children" id="${id}" style="display:none">
+      <div class="ck-cmp-head">
+        <span class="ck-cmp-path">Path</span>
+        <span>Generated</span>
+        <span>Existing</span>
+      </div>
+      ${rowsHtml || '<div class="ck-row ck-empty">no fields</div>'}
+    </div>`;
+}
+
+// Main entry point: consoleKit.log(anyObject, pm, meta)
 // Special-cases the { [headerString]: { ...sections } } shape produced by
 // formatLog(): the single top-level key becomes a chip-based summary card,
 // split on ",", and each section below it (missing/wrongType/extra/etc.)
-// renders as a collapsible row with its own "Copy" button.
-function log(obj, pm) {
+// renders as a collapsible row with its own "Copy" button. A section value
+// shaped like { __ckCompare: true, rows } renders via buildCompareSchemaHtml
+// instead of the generic tree. `meta.schemaText`, when given, adds a
+// "Schema Generator" button to the toolbar that copies the inferred schema.
+function log(obj, pm, meta) {
   if (!pm.visualizer || typeof pm.visualizer.set !== 'function') return;
+  meta = meta || {};
 
   const rootKeys = isPlainObject(obj) ? Object.keys(obj) : null;
   let headerHtml = '';
@@ -261,11 +308,21 @@ function log(obj, pm) {
   let toolbarHtml = '';
   if (isObj || isArr) {
     const entries = isArr ? sectionsObj.map((v, i) => [i, v]) : Object.entries(sectionsObj);
-    bodyHtml = entries.map(([k, v]) => buildTreeHtml(v, k)).join('');
-    if (entries.length) {
+    bodyHtml = entries.map(([k, v]) => (
+      v && typeof v === 'object' && v.__ckCompare
+        ? buildCompareSchemaHtml(k, v.rows)
+        : buildTreeHtml(v, k)
+    )).join('');
+
+    const schemaBtnHtml = meta.schemaText
+      ? `<button type="button" id="ck-schema-gen" class="ck-copy-btn ck-schema-btn" data-copy="${escapeHtml(meta.schemaText)}">Schema Generator</button>`
+      : '';
+
+    if (entries.length || schemaBtnHtml) {
       const noun = isArr ? 'items' : 'sections';
       toolbarHtml = `
         <div class="ck-toolbar">
+          ${schemaBtnHtml}
           <button id="ck-expand-all" type="button">Expand all</button>
           <button id="ck-collapse-all" type="button">Collapse all</button>
           <span class="ck-count">${entries.length} ${noun}</span>
@@ -452,6 +509,127 @@ function assertValid(body, schema) {
   return result;
 }
 
+/* ---------- schema generation & comparison ---------- */
+
+// Builds the 'type' / 'type?' / 'type|null' / 'type|null?' spec string for
+// one field, given every non-null value observed for it and whether it was
+// ever seen explicitly set to null.
+function inferSpecString(nonNullValues, hasNull) {
+  const types = [...new Set(nonNullValues.map((v) => typeOf(v)))];
+  let typeStr = types.join('|');
+  if (hasNull) typeStr = typeStr ? `${typeStr}|null` : 'null';
+  return typeStr || 'any';
+}
+
+// samples: every plain-object "instance" at this level - a single top-level
+// body, or every element of an array of objects. inheritedOptional carries
+// down from a parent that was itself missing/null in some samples, so every
+// field under it is optional too.
+function buildSchemaLevel(samples, prefix, out, inheritedOptional) {
+  const objectSamples = samples.filter(isPlainObject);
+  if (!objectSamples.length) return;
+
+  const allKeys = new Set();
+  objectSamples.forEach((s) => Object.keys(s).forEach((k) => allKeys.add(k)));
+
+  allKeys.forEach((key) => {
+    const path = prefix + key;
+    const withKey = objectSamples.filter((s) => has(s, key));
+    const optional = inheritedOptional || withKey.length < objectSamples.length;
+
+    const rawValues = withKey.map((s) => s[key]);
+    const hasNull = rawValues.some((v) => v === null);
+    const nonNull = rawValues.filter((v) => v !== null);
+    const types = [...new Set(nonNull.map((v) => typeOf(v)))];
+
+    // Every non-null sighting is a plain object -> recurse, no entry of its
+    // own is written (matches how you hand-write nested dotted paths).
+    if (types.length === 1 && types[0] === 'object') {
+      buildSchemaLevel(nonNull, `${path}.`, out, optional || hasNull);
+      return;
+    }
+
+    // Every non-null sighting is an array -> may need an `items` sub-schema.
+    if (types.length === 1 && types[0] === 'array') {
+      const elements = [].concat(...nonNull);
+      const elementObjects = elements.filter(isPlainObject);
+      const hasNonObjectElement = elements.some((el) => el !== null && !isPlainObject(el));
+      let typeStr = inferSpecString(nonNull, hasNull);
+      if (optional) typeStr += '?';
+      if (elementObjects.length && !hasNonObjectElement) {
+        const items = Object.create(null);
+        buildSchemaLevel(elementObjects, '', items, false);
+        out[path] = { type: typeStr, items };
+      } else {
+        out[path] = typeStr;
+      }
+      return;
+    }
+
+    // Scalars, mixed types, or an always-null field.
+    let typeStr = inferSpecString(nonNull, hasNull);
+    if (optional) typeStr += '?';
+    out[path] = typeStr;
+  });
+}
+
+/** Infers an assertFields()-style flat schema from an actual response body. */
+function generateSchema(body) {
+  const root = Array.isArray(body) ? body : [body];
+  const out = Object.create(null);
+  buildSchemaLevel(root, '', out, false);
+  return out;
+}
+
+// Pretty-prints a generated schema as pasteable JS source, matching the
+// style you'd hand-write for assertFields (single-quoted dotted keys,
+// { type, items } for arrays with a known element shape).
+function stringifySchemaForCopy(schemaObj, depth) {
+  depth = depth || 1;
+  const pad = '  '.repeat(depth);
+  const closePad = '  '.repeat(depth - 1);
+  const keys = Object.keys(schemaObj);
+  if (!keys.length) return '{}';
+  const lines = keys.map((key) => {
+    const spec = schemaObj[key];
+    const keyStr = `'${String(key).replace(/'/g, "\\'")}'`;
+    if (spec && typeof spec === 'object') {
+      const itemsBlock = stringifySchemaForCopy(spec.items || {}, depth + 1);
+      return `${pad}${keyStr}: { type: '${spec.type}', items: ${itemsBlock} }`;
+    }
+    return `${pad}${keyStr}: '${spec}'`;
+  });
+  return `{\n${lines.join(',\n')}\n${closePad}}`;
+}
+
+// Flattens either schema shape (string specs or { type, items } specs) into
+// path -> 'type[|null][?]' pairs, recursing into `items` under `path[].`.
+function flattenSchemaForCompare(schemaObj, prefix, out) {
+  if (!schemaObj) return;
+  Object.keys(schemaObj).forEach((key) => {
+    const path = prefix + key;
+    const { types, optional, items } = parseSpec(schemaObj[key]);
+    out[path] = types.join('|') + (optional ? '?' : '');
+    if (items) flattenSchemaForCompare(items, `${path}[].`, out);
+  });
+}
+
+// Diffs the generated schema against whatever schema you actually passed to
+// assertFields. Every path where the two sides don't match is flagged -
+// missing on either side, a type mismatch, or just a ?/|null difference.
+function buildSchemaCompareRows(generated, existing) {
+  const g = Object.create(null);
+  const e = Object.create(null);
+  flattenSchemaForCompare(generated, '', g);
+  flattenSchemaForCompare(existing || {}, '', e);
+  const paths = [...new Set([...Object.keys(g), ...Object.keys(e)])].sort();
+  return paths.map((path) => {
+    const gen = has(g, path) ? g[path] : null;
+    const ex = has(e, path) ? e[path] : null;
+    return { path, generated: gen, existing: ex, diff: gen !== ex };
+  });
+}
+
 /* ---------- URL spliterator ---------- */
 
 /**
@@ -540,7 +718,13 @@ function createPostmanAsserter(pm, urlPrefix, urlSuffix) {
       const header = `${icon} ${label} => Missing (${x}), Type Mismatches (${y}), Extra (${z})`.replace(/\s+/g, ' ').trim();
 
       console.log({[header]: formatReport(result)});
-      log(formatLog({ header, ...result }), pm);
+
+      const generatedSchema = generateSchema(body);
+      const compareRows = buildSchemaCompareRows(generatedSchema, schema);
+      const sections = formatLog({ header, ...result })[header];
+      sections['🧬 Compare Schema'] = { __ckCompare: true, rows: compareRows };
+
+      log({ [header]: sections }, pm, { schemaText: stringifySchemaForCopy(generatedSchema) });
 
       pm.test('All required fields exist', () => {
         pm.expect(result.missing.length, `Missing: ${result.missing.join(', ')}`).to.equal(0);

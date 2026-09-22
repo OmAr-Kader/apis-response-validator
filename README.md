@@ -357,7 +357,7 @@ Postman can import public npm packages in scripts with `pm.require`.
 
 ### Basic usage (Tests tab)
 ```javascript
-const { createPostmanAsserter } = pm.require('npm:@omar_kader/apis-response-validator@1.0.0');
+const { createPostmanAsserter } = pm.require('npm:@omar_kader/apis-response-validator@1.1.6');
 const { assertFields } = createPostmanAsserter(pm);
 
 pm.test('Status code is 200', () => pm.response.to.have.status(200));
