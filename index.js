@@ -5,100 +5,278 @@
 
 /* ---------- core (framework-agnostic) ---------- */
 
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
 
-function buildTreeHtml(value, key, depth) {
+function isPlainObject(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+// "⛔️ => Missing (1), Type Mismatches (1), Extra (9)" -> icon + chip list
+function parseHeaderChips(headerStr) {
+  let icon = '';
+  let rest = headerStr;
+  const arrowIdx = headerStr.indexOf('=>');
+  if (arrowIdx !== -1) {
+    icon = headerStr.slice(0, arrowIdx).trim();
+    rest = headerStr.slice(arrowIdx + 2).trim();
+  } else {
+    const m = headerStr.match(/^(\S+)\s+(.*)$/);
+    if (m) { icon = m[1]; rest = m[2]; }
+  }
+  const parts = rest.split(',').map((s) => s.trim()).filter(Boolean);
+  const chips = parts.map((p) => {
+    const m = p.match(/^(.*?)\s*\((\d+)\)$/);
+    return m ? { label: m[1].trim(), count: parseInt(m[2], 10) } : { label: p, count: null };
+  });
+  return { icon, chips };
+}
+
+function chipTone(label) {
+  const l = label.toLowerCase();
+  if (l.includes('missing')) return 'danger';
+  if (l.includes('mismatch') || l.includes('type')) return 'warning';
+  if (l.includes('extra')) return 'info';
+  if (l.includes('result') || l.includes('success') || l.includes('all')) return 'success';
+  return 'neutral';
+}
+
+function buildHeaderCard(headerStr) {
+  const { icon, chips } = parseHeaderChips(headerStr);
+  const chipsHtml = chips.map((c) => {
+    const tone = chipTone(c.label);
+    const countHtml = c.count !== null ? `<b>${c.count}</b>` : '';
+    return `<span class="ck-chip ck-chip-${tone}">${escapeHtml(c.label)} ${countHtml}</span>`;
+  }).join('');
+  return `
+    <div class="ck-header-card">
+      ${icon ? `<span class="ck-header-icon">${escapeHtml(icon)}</span>` : ''}
+      <div class="ck-header-chips">${chipsHtml}</div>
+    </div>`;
+}
+
+function buildTreeHtml(value, key) {
   const id = 'n' + Math.random().toString(36).slice(2);
-  const isObj = value !== null && typeof value === 'object' && !Array.isArray(value);
+  const isObj = isPlainObject(value);
   const isArr = Array.isArray(value);
+  const keyHtml = key !== null
+    ? `<span class="ck-key">${escapeHtml(key)}</span><span class="ck-punct">:</span> `
+    : '';
 
   if (!isObj && !isArr) {
     const type = value === null ? 'null'
       : typeof value === 'string' ? 'string'
       : typeof value === 'number' ? 'number'
       : 'boolean';
-    const display = type === 'string' ? `"${value}"` : String(value);
+    const display = type === 'string' ? `"${escapeHtml(value)}"` : String(value);
+    const copyPayload = escapeHtml(JSON.stringify(value));
     return `
-      <div class="ck-node" style="margin-left:${depth * 14}px">
-        ${key !== null ? `<span class="ck-key">${key}</span><span class="ck-punct">: </span>` : ''}
-        <span class="ck-${type}">${display}</span>
+      <div class="ck-row ck-leaf">
+        ${keyHtml}
+        <span class="ck-${type} ck-copyable" data-copy="${copyPayload}">${display}</span>
       </div>`;
   }
 
   const entries = isArr ? value.map((v, i) => [i, v]) : Object.entries(value);
-  const label = isArr ? `Array(${entries.length})` : `Object`;
+  const count = entries.length;
+  const label = isArr ? `Array(${count})` : `Object(${count})`;
+  const childrenHtml = entries.map(([k, v]) => buildTreeHtml(v, k)).join('');
 
-  const childrenHtml = entries
-    .map(([k, v]) => buildTreeHtml(v, k, depth + 1))
-    .join('');
+  // Copy button on arrays only. Copies each value backtick-quoted, one per
+  // line, comma-terminated — no array indices, no brackets:
+  //   `message`,
+  //   `data.offerings`,
+  let copyBtnHtml = '';
+  if (isArr && count) {
+    const copyText = value
+      .map((v) => '`' + (v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)) + '`,')
+      .join('\n');
+    copyBtnHtml = `<button type="button" class="ck-copy-btn" data-copy="${escapeHtml(copyText)}">Copy</button>`;
+  }
 
   return `
-    <div class="ck-node" style="margin-left:${depth * 14}px">
+    <div class="ck-row">
       <span class="ck-toggle" data-target="${id}">
-        <span class="ck-arrow">▶</span>
-        ${key !== null ? `<span class="ck-key">${key}</span><span class="ck-punct">: </span>` : ''}
+        <span class="ck-arrow">&#9656;</span>
+        ${keyHtml}
         <span class="ck-label">${label}</span>
       </span>
-      <div class="ck-children" id="${id}" style="display:none">
-        ${childrenHtml}
-      </div>
+      ${copyBtnHtml}
+    </div>
+    <div class="ck-children" id="${id}" style="display:none">
+      ${childrenHtml || '<div class="ck-row ck-empty">empty</div>'}
     </div>`;
 }
 
 const STYLE = `
 <style>
-  body { background:#1e1e1e; margin:0; }
-  #ck-root { font-family:'Menlo','Consolas',monospace; font-size:12px; color:#ccc; padding:8px; }
-  .ck-node { line-height:20px; white-space:nowrap; }
-  .ck-toggle { cursor:pointer; }
-  .ck-toggle:hover { background:#2a2a2a; }
-  .ck-arrow { display:inline-block; width:10px; color:#888; transition:transform .1s; }
-  .ck-arrow.open { transform:rotate(90deg); }
-  .ck-key { color:#9cdcfe; }
-  .ck-punct { color:#808080; }
-  .ck-label { color:#888; }
-  .ck-string { color:#ce9178; }
-  .ck-number { color:#b5cea8; }
-  .ck-boolean { color:#569cd6; }
-  .ck-null { color:#808080; }
+  html, body {
+    margin:0; padding:0; min-height:100%;
+    background:#111214;
+  }
+  #ck-root {
+    --ck-bg:#111214; --ck-bg2:#17181b; --ck-row-hover:#1b1c1f; --ck-border:#24262b;
+    --ck-text:#c6c9ce; --ck-muted:#6b6f76; --ck-key:#6fb4ff;
+    --ck-string:#e3b341; --ck-number:#7fe2b8; --ck-bool:#c79dff; --ck-null:#6b6f76;
+    --ck-punct:#4d5058; --ck-danger:#ff8a8f; --ck-success:#7fe2b8;
+    background:var(--ck-bg); color:var(--ck-text);
+    font:12.5px/22px 'JetBrains Mono','SF Mono',Menlo,Consolas,monospace;
+    padding:10px 8px 14px; border-radius:0;
+    min-height:100vh; box-sizing:border-box;
+  }
+  #ck-root .ck-header-card { display:flex; align-items:center; gap:10px; background:var(--ck-bg2); border:1px solid var(--ck-border); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+  #ck-root .ck-header-icon { font-size:16px; line-height:1; display:flex; align-items:center; }
+  #ck-root .ck-header-chips { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+  #ck-root .ck-chip { display:inline-flex; align-items:center; gap:4px; font-size:11.5px; padding:3px 8px; border-radius:20px; border:1px solid var(--ck-border); background:rgba(255,255,255,0.03); color:var(--ck-muted); line-height:1.4; }
+  #ck-root .ck-chip b { font-weight:600; }
+  #ck-root .ck-chip-danger { border-color:rgba(255,138,143,.35); background:rgba(255,138,143,.08); color:var(--ck-danger); }
+  #ck-root .ck-chip-warning { border-color:rgba(227,179,65,.35); background:rgba(227,179,65,.08); color:var(--ck-string); }
+  #ck-root .ck-chip-info { border-color:rgba(111,180,255,.35); background:rgba(111,180,255,.08); color:var(--ck-key); }
+  #ck-root .ck-chip-success { border-color:rgba(127,226,184,.35); background:rgba(127,226,184,.08); color:var(--ck-success); }
+  #ck-root .ck-toolbar { display:flex; align-items:center; gap:8px; padding:2px 4px 10px; border-bottom:1px solid var(--ck-border); margin-bottom:6px; }
+  #ck-root .ck-toolbar button { background:none; border:1px solid var(--ck-border); color:var(--ck-muted); font:inherit; font-size:11px; padding:2px 8px; border-radius:4px; cursor:pointer; }
+  #ck-root .ck-toolbar button:hover { color:var(--ck-text); border-color:#3a3d44; }
+  #ck-root .ck-count { color:var(--ck-muted); font-size:11px; margin-left:auto; }
+  #ck-root .ck-row { display:flex; align-items:center; padding:0 4px; border-radius:3px; white-space:nowrap; }
+  #ck-root .ck-toggle { display:flex; align-items:center; cursor:pointer; flex:0 1 auto; min-width:0; }
+  #ck-root .ck-row:hover { background:var(--ck-row-hover); }
+  #ck-root .ck-children { margin-left:7px; padding-left:11px; border-left:1px solid var(--ck-border); }
+  #ck-root .ck-arrow { display:inline-block; width:12px; color:var(--ck-muted); font-size:10px; transition:transform .12s ease; }
+  #ck-root .ck-arrow.open { transform:rotate(90deg); }
+  #ck-root .ck-key { color:var(--ck-key); }
+  #ck-root .ck-punct { color:var(--ck-punct); }
+  #ck-root .ck-label { color:var(--ck-muted); }
+  #ck-root .ck-string { color:var(--ck-string); }
+  #ck-root .ck-number { color:var(--ck-number); }
+  #ck-root .ck-boolean { color:var(--ck-bool); }
+  #ck-root .ck-null { color:var(--ck-null); font-style:italic; }
+  #ck-root .ck-empty { color:var(--ck-muted); font-style:italic; padding-left:2px; }
+  #ck-root .ck-copyable { cursor:pointer; border-radius:3px; }
+  #ck-root .ck-copyable:hover { outline:1px dashed #3a3d44; }
+  #ck-root .ck-copy-btn { flex:none; margin-left:10px; font:inherit; font-size:10.5px; color:var(--ck-muted); background:none; border:1px solid var(--ck-border); border-radius:4px; padding:2px 7px; cursor:pointer; opacity:0; transition:opacity .1s, color .1s, border-color .1s; }
+  #ck-root .ck-row:hover .ck-copy-btn { opacity:1; }
+  #ck-root .ck-copy-btn:hover { color:var(--ck-text); border-color:#3a3d44; }
+  #ck-root .ck-copy-btn.ck-copied { color:var(--ck-success); border-color:rgba(127,226,184,.35); opacity:1; }
+  #ck-root .ck-flash { color:#7fe2b8 !important; }
 </style>`;
 
 const SCRIPT = `
 <script>
-  document.getElementById('ck-root').addEventListener('click', (e) => {
+(function(){
+  const root = document.getElementById('ck-root');
+  if (!root) return;
+
+  function copyText(text) {
+    var done = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function(){ }, function(){ fallbackCopy(text); });
+        done = true;
+      }
+    } catch (err) {}
+    if (!done) fallbackCopy(text);
+  }
+
+  // Clipboard API is blocked or missing in some sandboxed iframes
+  // (e.g. Postman's visualizer). execCommand works there instead.
+  function fallbackCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand('copy'); } catch (err) {}
+    document.body.removeChild(ta);
+  }
+
+  root.addEventListener('click', function(e){
+    const copyBtn = e.target.closest('.ck-copy-btn');
+    if (copyBtn) {
+      e.stopPropagation();
+      copyText(copyBtn.getAttribute('data-copy') || '');
+      const original = copyBtn.textContent;
+      copyBtn.textContent = 'Copied';
+      copyBtn.classList.add('ck-copied');
+      setTimeout(function(){ copyBtn.textContent = original; copyBtn.classList.remove('ck-copied'); }, 900);
+      return;
+    }
     const toggle = e.target.closest('.ck-toggle');
-    if (!toggle) return;
-    const children = document.getElementById(toggle.dataset.target);
-    const arrow = toggle.querySelector('.ck-arrow');
-    const open = children.style.display !== 'none';
-    children.style.display = open ? 'none' : 'block';
-    arrow.classList.toggle('open', !open);
+    if (toggle) {
+      const children = document.getElementById(toggle.dataset.target);
+      const arrow = toggle.querySelector('.ck-arrow');
+      const open = children.style.display !== 'none';
+      children.style.display = open ? 'none' : 'block';
+      arrow.classList.toggle('open', !open);
+      return;
+    }
+    const copyable = e.target.closest('.ck-copyable');
+    if (copyable) {
+      const raw = copyable.getAttribute('data-copy');
+      let value = raw;
+      try { value = JSON.parse(raw); } catch (err) {}
+      const text = typeof value === 'string' ? value : String(value);
+      copyText(text);
+      copyable.classList.add('ck-flash');
+      setTimeout(function(){ copyable.classList.remove('ck-flash'); }, 300);
+    }
   });
+  const expandAll = document.getElementById('ck-expand-all');
+  const collapseAll = document.getElementById('ck-collapse-all');
+  function setAll(open) {
+    root.querySelectorAll('.ck-children').forEach(function(el){ el.style.display = open ? 'block' : 'none'; });
+    root.querySelectorAll('.ck-arrow').forEach(function(el){ el.classList.toggle('open', open); });
+  }
+  if (expandAll) expandAll.addEventListener('click', function(){ setAll(true); });
+  if (collapseAll) collapseAll.addEventListener('click', function(){ setAll(false); });
+})();
 </script>`;
 
 // Main entry point: consoleKit.log(anyObject)
+// Special-cases the { [headerString]: { ...sections } } shape produced by
+// formatLog(): the single top-level key becomes a chip-based summary card,
+// split on ",", and each section below it (missing/wrongType/extra/etc.)
+// renders as a collapsible row with its own "Copy" button.
 function log(obj, pm) {
   if (!pm.visualizer || typeof pm.visualizer.set !== 'function') return;
-  const isObj = obj !== null && typeof obj === 'object' && !Array.isArray(obj);
-  const isArr = Array.isArray(obj);
 
-  let rootHtml;
+  const rootKeys = isPlainObject(obj) ? Object.keys(obj) : null;
+  let headerHtml = '';
+  let sectionsObj = obj;
+
+  if (rootKeys && rootKeys.length === 1 && isPlainObject(obj[rootKeys[0]])) {
+    headerHtml = buildHeaderCard(rootKeys[0]);
+    sectionsObj = obj[rootKeys[0]];
+  }
+
+  const isObj = isPlainObject(sectionsObj);
+  const isArr = Array.isArray(sectionsObj);
+
+  let bodyHtml;
+  let toolbarHtml = '';
   if (isObj || isArr) {
-      // Render children directly, skipping the root Object/Array wrapper
-      const entries = isArr
-          ? obj.map((v, i) => [i, v])
-          : Object.entries(obj);
-      rootHtml = entries
-          .map(([k, v]) => buildTreeHtml(v, k, 0))
-          .join('');
+    const entries = isArr ? sectionsObj.map((v, i) => [i, v]) : Object.entries(sectionsObj);
+    bodyHtml = entries.map(([k, v]) => buildTreeHtml(v, k)).join('');
+    if (entries.length) {
+      const noun = isArr ? 'items' : 'sections';
+      toolbarHtml = `
+        <div class="ck-toolbar">
+          <button id="ck-expand-all" type="button">Expand all</button>
+          <button id="ck-collapse-all" type="button">Collapse all</button>
+          <span class="ck-count">${entries.length} ${noun}</span>
+        </div>`;
+    }
   } else {
-      // Primitive root — fall back to single-node render
-      rootHtml = buildTreeHtml(obj, null, 0);
+    bodyHtml = buildTreeHtml(sectionsObj, null);
   }
 
-  const html = `${STYLE}<div id="ck-root">${rootHtml}</div>${SCRIPT}`;
-  if (pm.visualizer && typeof pm.visualizer.set === 'function') {
-      pm.visualizer.set(html);
-  }
+  const html = `${STYLE}<div id="ck-root">${headerHtml}${toolbarHtml}${bodyHtml}</div>${SCRIPT}`;
+  pm.visualizer.set(html);
 }
 
 
